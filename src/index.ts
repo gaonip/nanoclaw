@@ -574,6 +574,42 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    // Auto-register forum topics when parent supergroup is registered
+    onAutoRegisterTopic: (
+      topicJid: string,
+      parentJid: string,
+      topicName?: string,
+    ): boolean => {
+      const parent = registeredGroups[parentJid];
+      if (!parent) return false;
+
+      // Extract topic ID from JID (e.g., tg:-100123:456 -> 456)
+      const topicId = topicJid.split(':').pop() || 'unknown';
+      const name = topicName || `${parent.name} Topic ${topicId}`;
+      const folder = `${parent.folder}_topic_${topicId}`;
+
+      const topicGroup: RegisteredGroup = {
+        name,
+        folder,
+        trigger: parent.trigger,
+        added_at: new Date().toISOString(),
+        containerConfig: parent.containerConfig,
+        requiresTrigger: parent.requiresTrigger,
+        isMain: false, // Topics are never main groups
+      };
+
+      try {
+        registerGroup(topicJid, topicGroup);
+        logger.info(
+          { topicJid, parentJid, folder },
+          'Auto-registered forum topic',
+        );
+        return true;
+      } catch (err) {
+        logger.error({ topicJid, err }, 'Failed to auto-register forum topic');
+        return false;
+      }
+    },
   };
 
   // Create and connect all registered channels.

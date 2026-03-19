@@ -3,7 +3,11 @@ import { Api, Bot } from 'grammy';
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
-import { registerChannel, ChannelOpts } from './registry.js';
+import {
+  registerChannel,
+  ChannelOpts,
+  OnAutoRegisterTopic,
+} from './registry.js';
 import {
   Channel,
   OnChatMetadata,
@@ -15,6 +19,7 @@ export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  onAutoRegisterTopic?: OnAutoRegisterTopic;
 }
 
 /**
@@ -59,14 +64,20 @@ export class TelegramChannel implements Channel {
     this.bot.command('chatid', (ctx) => {
       const chatId = ctx.chat.id;
       const chatType = ctx.chat.type;
+      const threadId = ctx.message?.message_thread_id;
       const chatName =
         chatType === 'private'
           ? ctx.from?.first_name || 'Private'
           : (ctx.chat as any).title || 'Unknown';
 
+      // For forum topics, show the topic-specific JID
+      const jid = threadId ? `tg:${chatId}:${threadId}` : `tg:${chatId}`;
+      const topicInfo = threadId ? `\nTopic ID: ${threadId}` : '';
+      const isForum = (ctx.chat as any).is_forum ? ' (Forum)' : '';
+
       ctx.reply(
-        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
-        { parse_mode: 'Markdown' },
+        `Chat ID: \`${jid}\`\nName: ${chatName}\nType: ${chatType}${isForum}${topicInfo}`,
+        { parse_mode: 'Markdown', message_thread_id: threadId },
       );
     });
 
@@ -79,7 +90,11 @@ export class TelegramChannel implements Channel {
       // Skip commands
       if (ctx.message.text.startsWith('/')) return;
 
-      const chatJid = `tg:${ctx.chat.id}`;
+      // Include topic ID in JID for forum supergroups (e.g., tg:-100123:456)
+      const threadId = ctx.message.message_thread_id;
+      const chatJid = threadId
+        ? `tg:${ctx.chat.id}:${threadId}`
+        : `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
@@ -121,7 +136,23 @@ export class TelegramChannel implements Channel {
       this.opts.onChatMetadata(chatJid, timestamp, chatName, 'telegram', isGroup);
 
       // Only deliver full message for registered groups
-      const group = this.opts.registeredGroups()[chatJid];
+      let group = this.opts.registeredGroups()[chatJid];
+
+      // Auto-register forum topics: if this is a topic and parent supergroup is registered
+      if (!group && threadId && this.opts.onAutoRegisterTopic) {
+        const parentJid = `tg:${ctx.chat.id}`;
+        const parentGroup = this.opts.registeredGroups()[parentJid];
+        if (parentGroup) {
+          // Try to get topic name from the forum topic info
+          const topicName = (ctx.message as any).reply_to_message?.forum_topic_created?.name;
+          const registered = this.opts.onAutoRegisterTopic(chatJid, parentJid, topicName);
+          if (registered) {
+            // Refresh group reference after registration
+            group = this.opts.registeredGroups()[chatJid];
+          }
+        }
+      }
+
       if (!group) {
         logger.debug(
           { chatJid, chatName },
@@ -149,8 +180,26 @@ export class TelegramChannel implements Channel {
 
     // Handle non-text messages with placeholders so the agent knows something was sent
     const storeNonText = (ctx: any, placeholder: string) => {
-      const chatJid = `tg:${ctx.chat.id}`;
-      const group = this.opts.registeredGroups()[chatJid];
+      // Include topic ID in JID for forum supergroups
+      const threadId = ctx.message?.message_thread_id;
+      const chatJid = threadId
+        ? `tg:${ctx.chat.id}:${threadId}`
+        : `tg:${ctx.chat.id}`;
+      let group = this.opts.registeredGroups()[chatJid];
+
+      // Auto-register forum topics
+      if (!group && threadId && this.opts.onAutoRegisterTopic) {
+        const parentJid = `tg:${ctx.chat.id}`;
+        const parentGroup = this.opts.registeredGroups()[parentJid];
+        if (parentGroup) {
+          const topicName = ctx.message?.reply_to_message?.forum_topic_created?.name;
+          const registered = this.opts.onAutoRegisterTopic(chatJid, parentJid, topicName);
+          if (registered) {
+            group = this.opts.registeredGroups()[chatJid];
+          }
+        }
+      }
+
       if (!group) return;
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
@@ -221,18 +270,24 @@ export class TelegramChannel implements Channel {
     }
 
     try {
-      const numericId = jid.replace(/^tg:/, '');
+      // Parse JID: tg:chatId or tg:chatId:threadId (for forum topics)
+      const withoutPrefix = jid.replace(/^tg:/, '');
+      const parts = withoutPrefix.split(':');
+      const chatId = parts[0];
+      const threadId = parts[1] ? parseInt(parts[1], 10) : undefined;
+      const options = threadId ? { message_thread_id: threadId } : {};
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
       if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text);
+        await sendTelegramMessage(this.bot.api, chatId, text, options);
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
           await sendTelegramMessage(
             this.bot.api,
-            numericId,
+            chatId,
             text.slice(i, i + MAX_LENGTH),
+            options,
           );
         }
       }
@@ -261,8 +316,14 @@ export class TelegramChannel implements Channel {
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
     if (!this.bot || !isTyping) return;
     try {
-      const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.sendChatAction(numericId, 'typing');
+      // Parse JID: tg:chatId or tg:chatId:threadId
+      const withoutPrefix = jid.replace(/^tg:/, '');
+      const parts = withoutPrefix.split(':');
+      const chatId = parts[0];
+      const threadId = parts[1] ? parseInt(parts[1], 10) : undefined;
+      await this.bot.api.sendChatAction(chatId, 'typing', {
+        message_thread_id: threadId,
+      });
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
     }

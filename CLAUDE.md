@@ -55,6 +55,45 @@ systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
 
+## Telegram Agent Swarm (Bot Pool)
+
+Agent Teams on Telegram use a pool of send-only bots so each subagent appears with its own identity. The main bot receives messages; pool bots only send.
+
+### Setup
+
+1. Create 3-5 bots via @BotFather (`/newbot`), get their tokens
+2. For each pool bot: @BotFather > `/mybots` > select bot > **Bot Settings** > **Group Privacy** > **Turn off**
+3. Add all pool bots to your Telegram group(s) (including forum supergroups — they can send to all topics)
+4. Add tokens to `.env` and `data/env/env`: `TELEGRAM_BOT_POOL=TOKEN1,TOKEN2,TOKEN3`
+5. Rebuild and restart: `npm run build && systemctl --user restart nanoclaw` (or `launchctl kickstart` on macOS)
+
+### Key files
+
+| File | What it does |
+|------|-------------|
+| `src/config.ts` | Reads `TELEGRAM_BOT_POOL` from env |
+| `src/channels/telegram.ts` | `initBotPool()` creates send-only `Api` instances; `sendPoolMessage()` assigns bots round-robin per sender+group and renames via `setMyName` |
+| `src/ipc.ts` | Routes IPC messages with `sender` field on `tg:` JIDs through pool bots |
+| `src/index.ts` | Calls `initBotPool()` at startup |
+| `container/agent-runner/src/ipc-mcp-stdio.ts` | `send_message` tool has optional `sender` param |
+| `groups/main/CLAUDE.md` | Agent Teams instructions for the lead agent |
+
+### How it works
+
+- Subagent calls `send_message(text: "Found results", sender: "Researcher")`
+- IPC file written with `sender` field → host IPC watcher picks it up
+- If `sender` present and JID starts with `tg:`: routes through `sendPoolMessage()`
+- Pool bot assigned round-robin, renamed to sender's role via `setMyName`, then sends
+- Mapping is stable per `{groupFolder}:{senderName}` — same sender always uses same bot
+- Works with forum topics (`tg:chatId:threadId` JIDs) — pool bots send to the correct thread
+- Mapping resets on service restart
+
+### Troubleshooting
+
+- **Pool bots not sending:** Verify they're members of the group and Group Privacy is off
+- **Bot names not updating:** Telegram caches names client-side; restart Telegram app
+- **No pool bots initialized:** Check `grep pool logs/nanoclaw.log` — tokens may be invalid
+
 ## Troubleshooting
 
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate channel fork, not bundled in core. Run `/add-whatsapp` (or `git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git && git fetch whatsapp main && (git merge whatsapp/main || { git checkout --theirs package-lock.json && git add package-lock.json && git merge --continue; }) && npm run build`) to install it. Existing auth credentials and groups are preserved.

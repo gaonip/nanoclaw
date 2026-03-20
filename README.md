@@ -89,7 +89,7 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content from the Web
 - **Container isolation** - Agents are sandboxed in [Docker Sandboxes](https://nanoclaw.dev/blog/nanoclaw-docker-sandboxes) (micro VM isolation), Apple Container (macOS), or Docker (macOS/Linux)
-- **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks
+- **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks. On Telegram, each subagent gets its own bot identity via `/add-telegram-swarm`
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage

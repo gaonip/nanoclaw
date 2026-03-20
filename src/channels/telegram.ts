@@ -45,6 +45,86 @@ async function sendTelegramMessage(
   }
 }
 
+// --- Bot Pool (Agent Swarm) ---
+
+let poolApis: Api[] = [];
+const senderBotMap = new Map<string, number>();
+let nextPoolIndex = 0;
+
+export async function initBotPool(tokens: string[]): Promise<void> {
+  for (const token of tokens) {
+    try {
+      const api = new Api(token);
+      const me = await api.getMe();
+      poolApis.push(api);
+      logger.info(
+        { username: me.username, id: me.id },
+        'Pool bot initialized',
+      );
+    } catch (err) {
+      logger.error({ err }, 'Failed to initialize pool bot');
+    }
+  }
+  logger.info({ count: poolApis.length }, 'Bot pool ready');
+}
+
+export async function sendPoolMessage(
+  jid: string,
+  text: string,
+  sender: string,
+  groupFolder: string,
+): Promise<void> {
+  if (poolApis.length === 0) {
+    logger.debug('No pool bots available, falling back to main bot');
+    return; // caller should fall back to main bot
+  }
+
+  const key = `${groupFolder}:${sender}`;
+  let idx = senderBotMap.get(key);
+  if (idx === undefined) {
+    idx = nextPoolIndex % poolApis.length;
+    nextPoolIndex++;
+    senderBotMap.set(key, idx);
+  }
+  const api = poolApis[idx];
+
+  // Parse JID: tg:chatId or tg:chatId:threadId
+  const withoutPrefix = jid.replace(/^tg:/, '');
+  const parts = withoutPrefix.split(':');
+  const chatId = parts[0];
+  const threadId = parts[1] ? parseInt(parts[1], 10) : undefined;
+  const options = threadId ? { message_thread_id: threadId } : {};
+
+  try {
+    await api.setMyName(sender);
+  } catch (err) {
+    logger.debug({ err, sender }, 'Failed to set pool bot name');
+  }
+
+  // Small delay so Telegram reflects the name change
+  await new Promise((r) => setTimeout(r, 2000));
+
+  // Split at 4096 char limit
+  const MAX_LENGTH = 4096;
+  try {
+    if (text.length <= MAX_LENGTH) {
+      await sendTelegramMessage(api, chatId, text, options);
+    } else {
+      for (let i = 0; i < text.length; i += MAX_LENGTH) {
+        await sendTelegramMessage(
+          api,
+          chatId,
+          text.slice(i, i + MAX_LENGTH),
+          options,
+        );
+      }
+    }
+    logger.info({ jid, sender, poolIdx: idx }, 'Pool bot message sent');
+  } catch (err) {
+    logger.error({ jid, sender, err }, 'Failed to send pool bot message');
+  }
+}
+
 export class TelegramChannel implements Channel {
   name = 'telegram';
 

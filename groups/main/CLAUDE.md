@@ -244,3 +244,23 @@ When scheduling tasks for other groups, use the `target_group_jid` parameter wit
 - `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
 
 The task will run in that group's context with access to their files and memory.
+
+---
+
+## Agent Teams
+
+You can create teams of specialized agents that appear as separate identities in Telegram. Use the `sender` parameter with `send_message` to send messages from a named teammate.
+
+### How it works
+
+When you call `mcp__nanoclaw__send_message` with a `sender` parameter (e.g., `sender: "Researcher"`), the message is sent from a dedicated pool bot that gets renamed to match. Each unique sender name is consistently mapped to the same bot.
+
+### Guidelines
+
+- Create the exact team the user requests — match the roles/names they specify
+- Each teammate sends their own messages via `send_message` with their `sender` name
+- Keep teammate messages short (2-4 sentences) and focused on their role
+- Use consistent sender names throughout a conversation (e.g., always "Researcher", not "Research Agent" then "Researcher")
+- As the lead agent, do NOT relay or repeat what teammates said — they already sent their messages
+- Use `<internal>` tags for your own coordination/processing thoughts
+- Only create teams when the user explicitly requests team/swarm behavior
